@@ -1,0 +1,29 @@
+[package]
+name = "sc_app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sketchcad"
+path = "src/main.rs"
+
+[dependencies]
+sc_math.workspace = true
+sc_geom.workspace = true
+sc_render.workspace = true
+sc_skp.workspace = true
+eframe.workspace = true
+egui.workspace = true
+glam.workspace = true
+slotmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu", "snapshot"] }
+slotmap.workspace = true

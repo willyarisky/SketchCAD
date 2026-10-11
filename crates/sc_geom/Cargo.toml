@@ -1,0 +1,13 @@
+[package]
+name = "sc_geom"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sc_math.workspace = true
+glam.workspace = true
+slotmap.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

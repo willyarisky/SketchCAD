@@ -1,0 +1,13 @@
+[package]
+name = "sc_render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sc_math.workspace = true
+sc_geom.workspace = true
+eframe.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+egui.workspace = true
+serde.workspace = true
