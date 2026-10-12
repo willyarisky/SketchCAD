@@ -9,6 +9,36 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# rustup keeps cargo in ~/.cargo/bin and puts it on PATH from your shell profile. Running this
+# with `bash build-release.sh` from zsh (or from a cron job, or an IDE) skips that profile, so
+# pick the toolchain up the way rustup's own installer does.
+if ! command -v cargo >/dev/null 2>&1 && [ -r "$HOME/.cargo/env" ]; then
+  . "$HOME/.cargo/env"
+fi
+
+# Report everything that is missing at once: finding out about mingw after the macOS build has
+# already run is a slow way to learn it.
+missing=()
+for tool in cargo rustup lipo codesign zip ditto tar shasum; do
+  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+done
+if command -v cargo >/dev/null 2>&1; then
+  # Checked as a binary on PATH: `cargo zigbuild` has no --version flag to probe with.
+  command -v cargo-zigbuild >/dev/null 2>&1 || missing+=("cargo-zigbuild (cargo install cargo-zigbuild --locked)")
+  command -v zig >/dev/null 2>&1 || missing+=("zig (brew install zig)")
+  command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 || missing+=("mingw-w64 (brew install mingw-w64)")
+  for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-gnu x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+    rustup target list --installed 2>/dev/null | grep -qx "$t" || missing+=("rust target $t (rustup target add $t)")
+  done
+fi
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "Cannot build the release; these are missing:" >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  [ -d "$HOME/.cargo/bin" ] && ! command -v cargo >/dev/null 2>&1 &&
+    echo "(cargo is in ~/.cargo/bin but not on PATH — see the note at the top of this script)" >&2
+  exit 1
+fi
+
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 DIST=dist
 GLIBC=2.31   # oldest glibc the Linux builds run on (Ubuntu 20.04, Debian 11)
