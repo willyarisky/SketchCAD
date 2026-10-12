@@ -14,6 +14,12 @@ use egui::{Color32, Frame, Margin, RichText};
 use icons::{Icon, icon_button};
 use sc_render::FaceStyle;
 
+/// Width limits for the Measurements box, which the user can drag to resize.
+const VCB_MIN_WIDTH: f32 = 60.0;
+const VCB_MAX_WIDTH: f32 = 420.0;
+/// Width it starts at, matching SketchUp's.
+pub const VCB_DEFAULT_WIDTH: f32 = 150.0;
+
 pub fn apply_theme(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Light);
     ctx.global_style_mut(|style| {
@@ -356,7 +362,7 @@ impl SketchCadApp {
                     let shown = if self.vcb_typing { self.vcb_text.clone() } else { self.vcb.value.clone() };
                     let id = egui::Id::new("vcb");
                     let mut text = shown;
-                    let resp = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(150.0).font(egui::TextStyle::Monospace));
+                    let resp = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(self.vcb_width).font(egui::TextStyle::Monospace));
                     if resp.gained_focus() {
                         self.vcb_typing = true;
                         self.vcb_text.clear();
@@ -372,10 +378,37 @@ impl SketchCadApp {
                             self.vcb_typing = false;
                         }
                     }
+                    self.vcb_grip(ui);
                     ui.label(self.tool.vcb_label());
                 });
             });
         });
+    }
+
+    /// The handle that widens or narrows the Measurements box, as SketchUp's does.
+    ///
+    /// The box is laid out from the right edge of the window, so dragging the handle left has to
+    /// *grow* it — the sign here is deliberate.
+    fn vcb_grip(&mut self, ui: &mut egui::Ui) {
+        let height = ui.available_height().min(18.0);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(9.0, height), egui::Sense::drag());
+        self.vcb_grip_rect = rect;
+        if resp.dragged() {
+            // Never let it swallow the whole bar: the status text on the left needs room, and a
+            // box narrower than a few digits cannot show a measurement.
+            let max = (ui.available_width() + self.vcb_width - 120.0).max(VCB_MIN_WIDTH);
+            self.vcb_width = (self.vcb_width - resp.drag_delta().x).clamp(VCB_MIN_WIDTH, max.min(VCB_MAX_WIDTH));
+        }
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        // Two faint ridges, the usual sign for "drag me sideways".
+        let color = if resp.hovered() || resp.dragged() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+        let (top, bottom) = (rect.center().y - height * 0.3, rect.center().y + height * 0.3);
+        for dx in [-1.5, 1.5] {
+            let x = rect.center().x + dx;
+            ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], egui::Stroke::new(1.0, color));
+        }
     }
 
     pub fn submit_vcb(&mut self) {

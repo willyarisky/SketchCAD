@@ -65,6 +65,11 @@ pub struct SketchCadApp {
     /// Characters typed into the Measurements box but not yet submitted.
     pub vcb_text: String,
     pub vcb_typing: bool,
+    /// Width of the Measurements box; the grip beside it drags this.
+    pub vcb_width: f32,
+    /// Where that grip was last drawn. The status bar spans the whole window, so this cannot be
+    /// worked out from the viewport rect.
+    pub vcb_grip_rect: egui::Rect,
     pub message: Option<(String, Instant, bool)>,
     pub material: Color,
     pub keymap: Keymap,
@@ -104,6 +109,8 @@ impl SketchCadApp {
             vcb: Vcb::default(),
             vcb_text: String::new(),
             vcb_typing: false,
+            vcb_width: crate::ui::VCB_DEFAULT_WIDTH,
+            vcb_grip_rect: egui::Rect::NOTHING,
             message: None,
             material: [178, 34, 34, 255],
             keymap: Keymap::default(),

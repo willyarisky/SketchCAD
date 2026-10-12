@@ -265,10 +265,27 @@ fn sdk() -> Result<sc_skp::locate::Sdk, String> {
 /// A document read from a SketchUp file, with notes about what could not be brought across.
 pub type OpenResult = Result<(Document, Vec<String>), String>;
 
+/// What SketchCAD can tell about a file on its own, for when the SketchUp library cannot open it.
+///
+/// The container is readable without Trimble's code (see [`sc_skp::native`]) even when the
+/// library refuses the file, so a failure can at least say what the file holds instead of only
+/// that it would not open.
+fn native_note(path: &Path) -> String {
+    let Ok(f) = sc_skp::native::read(path) else { return String::new() };
+    if f.model_dat.is_none() {
+        return String::new();
+    }
+    let textured = f.materials.iter().filter(|m| m.texture_file.is_some()).count();
+    format!("\n\nReading the file directly, SketchCAD can see it was written by {} and holds {} material(s), {textured} of them textured. Only the geometry needs the SketchUp library.", f.version_name(), f.materials.len())
+}
+
 /// Read a `.skp`/`.skb` into a document (runs the converter; may take a moment).
 pub fn open(path: &Path) -> OpenResult {
-    let sdk = sdk()?;
-    let src = sc_skp::locate::read(&sdk, path)?;
+    let src = match sdk() {
+        Ok(sdk) => sc_skp::locate::read(&sdk, path),
+        Err(e) => Err(e),
+    }
+    .map_err(|e| format!("{e}{}", native_note(path)))?;
     let model = import(&src);
     let doc = Document { model, path: Some(path.to_path_buf()), ..Default::default() };
     Ok((doc, src.warnings))

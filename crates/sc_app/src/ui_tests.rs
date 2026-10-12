@@ -451,3 +451,44 @@ fn textured_face_renders() {
     let plain = reds(&mut h);
     assert!(plain * 10 < textured, "Shaded style should drop the texture: {plain} vs {textured}");
 }
+
+/// The Measurements box resizes by dragging the grip beside it, as SketchUp's does: left to
+/// widen, right to narrow, and it refuses to shrink away or eat the whole status bar.
+#[test]
+fn measurements_box_resizes_by_dragging() {
+    let mut h = harness(LaunchOptions::default());
+    let start = h.state().vcb_width;
+    assert_eq!(start, crate::ui::VCB_DEFAULT_WIDTH);
+
+    let grip = |h: &Harness<SketchCadApp>| h.state().vcb_grip_rect.center();
+    let drag = |h: &mut Harness<SketchCadApp>, from: Pos2, dx: f32| {
+        h.event(Event::PointerMoved(from));
+        h.step();
+        h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.step();
+        // egui reads a drag from pointer motion while the button is held.
+        for i in 1..=4 {
+            h.event(Event::PointerMoved(from + egui::vec2(dx * i as f32 / 4.0, 0.0)));
+            h.step();
+        }
+        h.event(Event::PointerButton { pos: from + egui::vec2(dx, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.step();
+    };
+
+    let g = grip(&h);
+    drag(&mut h, g, -80.0);
+    let wider = h.state().vcb_width;
+    assert!(wider > start + 50.0, "dragging left should widen: {start} -> {wider}");
+    save(&mut h, "measurements_widened");
+
+    let g = grip(&h);
+    drag(&mut h, g, 60.0);
+    let narrower = h.state().vcb_width;
+    assert!(narrower < wider - 30.0, "dragging right should narrow: {wider} -> {narrower}");
+
+    // Yanking far right stops at the minimum rather than collapsing the box.
+    let g = grip(&h);
+    drag(&mut h, g, 4000.0);
+    assert_eq!(h.state().vcb_width, 60.0, "clamped to the minimum width");
+    save(&mut h, "measurements_resized");
+}

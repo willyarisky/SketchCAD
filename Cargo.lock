@@ -2911,8 +2911,10 @@ name = "sc_skp"
 version = "0.1.0"
 dependencies = [
  "libloading",
+ "quick-xml",
  "serde",
  "serde_json",
+ "zip",
 ]
 
 [[package]]

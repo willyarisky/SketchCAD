@@ -1,12 +1,17 @@
 //! SketchUp `.skp` / `.skb` support.
 //!
-//! `.skp` is SketchUp's proprietary format; the only reliable reader/writer is Trimble's SketchUp C
-//! API library (`SketchUpAPI`), from the SketchUp SDK or a SketchUp installation. SketchCAD never
-//! links it: the `sketchcad-skp` converter loads it at run time and translates between `.skp` and
-//! [`SkpModel`], a plain description of the geometry. `.skb` is SketchUp's backup copy of a `.skp`
-//! — the same format under another extension.
+//! `.skp` is SketchUp's proprietary format. Geometry goes through Trimble's SketchUp C API
+//! library (`SketchUpAPI`), from the SketchUp SDK or a SketchUp installation; SketchCAD never
+//! links it, the `sketchcad-skp` converter loads it at run time and translates between `.skp` and
+//! [`SkpModel`], a plain description of the geometry. `.skb` is SketchUp's backup copy of a
+//! `.skp` — the same format under another extension.
+//!
+//! [`native`] reads the container itself, with no Trimble code at all: version, materials,
+//! textures and the thumbnail, including from files too new for the installed library. It stops
+//! short of geometry, which is still undecoded — see that module for where the line falls.
 
 pub mod locate;
+pub mod native;
 
 use serde::{Deserialize, Serialize};
 
@@ -177,8 +182,15 @@ pub fn file_version(path: &std::path::Path) -> Option<String> {
     use std::io::Read;
     let mut head = [0u8; 160];
     let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    file_version_from(&head[..n])
+}
+
+/// As [`file_version`], from bytes already in hand. Every container starts with this same
+/// header, so it works whatever the rest of the file turns out to be.
+pub fn file_version_from(bytes: &[u8]) -> Option<String> {
+    let head = &bytes[..bytes.len().min(160)];
     // The header is UTF-16LE text: "SketchUp Model" then "{major.minor.build}".
-    let text: String = head[..n].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).filter_map(|u| char::from_u32(u as u32)).collect();
+    let text: String = head.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).filter_map(|u| char::from_u32(u as u32)).collect();
     let start = text.find('{')? + 1;
     let end = start + text[start..].find('}')?;
     Some(text[start..end].to_string())

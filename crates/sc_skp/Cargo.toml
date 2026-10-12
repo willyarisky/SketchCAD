@@ -9,7 +9,14 @@ edition.workspace = true
 name = "sketchcad-skp"
 path = "src/bin/sketchcad-skp/main.rs"
 
+# Reads .skp containers directly, with no SketchUp library involved.
+[[bin]]
+name = "skp-inspect"
+path = "src/bin/skp-inspect.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 libloading = "0.8.9"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+quick-xml = "0.41"
