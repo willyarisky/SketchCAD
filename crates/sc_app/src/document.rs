@@ -1,7 +1,7 @@
 //! The open model: geometry, components, tags, scenes, view settings, selection, edit context
 //! and undo history.
 
-use sc_geom::{DefId, EdgeId, FaceId, InstanceId, Mesh, VertexId};
+use sc_geom::{DefId, EdgeId, FaceId, InstanceId, Mesh, TexId, Texture, VertexId};
 use sc_math::units::UnitSettings;
 use sc_math::{Aabb, DMat4, DVec3};
 use sc_render::{Camera, FaceStyle};
@@ -41,7 +41,7 @@ pub struct StyleSettings {
 
 impl Default for StyleSettings {
     fn default() -> Self {
-        Self { face_style: FaceStyle::Shaded, back_edges: false, show_axes: true, show_guides: true, show_sky_ground: true }
+        Self { face_style: FaceStyle::ShadedWithTextures, back_edges: false, show_axes: true, show_guides: true, show_sky_ground: true }
     }
 }
 
@@ -78,6 +78,9 @@ pub struct ModelData {
     pub mesh: Mesh,
     #[serde(default)]
     pub definitions: SlotMap<DefId, Definition>,
+    /// Images painted on faces, shared by every mesh in the model.
+    #[serde(default)]
+    pub textures: SlotMap<TexId, Texture>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -93,6 +96,7 @@ impl Default for ModelData {
         Self {
             mesh: Mesh::new(),
             definitions: SlotMap::with_key(),
+            textures: SlotMap::with_key(),
             tags: Vec::new(),
             scenes: Vec::new(),
             guides: Vec::new(),

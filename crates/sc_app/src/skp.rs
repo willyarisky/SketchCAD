@@ -1,10 +1,10 @@
 //! Opening and saving SketchUp files (`.skp`, and `.skb` backups) through `sc_skp`.
 
 use crate::document::{Definition, Document, ModelData, Tag};
-use sc_geom::{Color, DefId, Instance, Mesh, MeshBuilder};
+use sc_geom::{Color, DefId, FaceTexture, Instance, Mesh, MeshBuilder, TexId, Texture, UvMap};
 use sc_math::units::LengthUnit;
 use sc_math::{DMat4, DVec3};
-use sc_skp::{SkpCamera, SkpDefinition, SkpEdge, SkpEntities, SkpFace, SkpInstance, SkpLayer, SkpMaterial, SkpModel};
+use sc_skp::{SkpCamera, SkpDefinition, SkpEdge, SkpEntities, SkpFace, SkpInstance, SkpLayer, SkpMaterial, SkpModel, SkpTexture, SkpUv};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -17,10 +17,34 @@ fn v3(p: [f64; 3]) -> DVec3 {
     DVec3::from_array(p)
 }
 
+/// Looks up the texture a face side should wear, given its material and placement.
+type FaceTexFn<'a> = &'a dyn Fn(Option<usize>, &Option<SkpUv>) -> Option<FaceTexture>;
+
+fn uv_map(m: &SkpUv) -> UvMap {
+    UvMap { u: sc_math::DVec4::from_array(m.u), v: sc_math::DVec4::from_array(m.v) }
+}
+
+fn uv_wire(m: &UvMap) -> SkpUv {
+    SkpUv { u: m.u.to_array(), v: m.v.to_array() }
+}
+
 /// SketchUp model → SketchCAD model.
 pub fn import(src: &SkpModel) -> ModelData {
     let mut model = ModelData::default();
     let color = |i: Option<usize>| -> Option<Color> { i.and_then(|i| src.materials.get(i)).map(|m| m.color) };
+
+    // Textures first; faces refer to them by id.
+    let tex_ids: Vec<TexId> = src
+        .textures
+        .iter()
+        .map(|t| model.textures.insert(Texture { name: t.name.clone(), width: t.width, height: t.height, size: t.size_inches, data: t.data.clone() }))
+        .collect();
+    // The texture a material paints with, if any.
+    let tex_of = |i: Option<usize>| -> Option<TexId> { i.and_then(|i| src.materials.get(i)).and_then(|m| m.texture).and_then(|t| tex_ids.get(t).copied()) };
+    let face_tex = |mat: Option<usize>, uv: &Option<SkpUv>| -> Option<FaceTexture> {
+        // Without a placement the texture cannot be drawn, so the face falls back to its colour.
+        Some(FaceTexture { tex: tex_of(mat)?, uv: uv_map(uv.as_ref()?) })
+    };
 
     // Definitions first, so instances can refer to any of them.
     let ids: Vec<DefId> = src
@@ -32,7 +56,13 @@ pub fn import(src: &SkpModel) -> ModelData {
     // a painted copy of the definition (shared by every instance painted the same).
     let mut painted: HashMap<(usize, usize), DefId> = HashMap::new();
 
-    fn build(ents: &SkpEntities, color: &dyn Fn(Option<usize>) -> Option<Color>, inst_def: &mut dyn FnMut(&SkpInstance) -> Option<DefId>, tags: &[u32]) -> Mesh {
+    fn build(
+        ents: &SkpEntities,
+        color: &dyn Fn(Option<usize>) -> Option<Color>,
+        face_tex: FaceTexFn,
+        inst_def: &mut dyn FnMut(&SkpInstance) -> Option<DefId>,
+        tags: &[u32],
+    ) -> Mesh {
         let mut b = MeshBuilder::new();
         for e in &ents.edges {
             b.edge(v3(e.a), v3(e.b), e.soft, e.smooth, e.hidden, e.curve);
@@ -40,7 +70,14 @@ pub fn import(src: &SkpModel) -> ModelData {
         for f in &ents.faces {
             let outer: Vec<DVec3> = f.outer.iter().map(|p| v3(*p)).collect();
             let holes: Vec<Vec<DVec3>> = f.holes.iter().map(|h| h.iter().map(|p| v3(*p)).collect()).collect();
-            b.face(&outer, &holes, v3(f.normal), color(f.front), color(f.back));
+            let Some(id) = b.face(&outer, &holes, v3(f.normal), color(f.front), color(f.back)) else { continue };
+            let (ft, bt) = (face_tex(f.front, &f.front_uv), face_tex(f.back, &f.back_uv));
+            if ft.is_some() || bt.is_some() {
+                let face = b.face_mut(id);
+                // `b.face` may flip the loops to match the normal; that swaps which side is which.
+                let flipped = face.plane.normal.dot(v3(f.normal)) < 0.0;
+                (face.front_tex, face.back_tex) = if flipped { (bt, ft) } else { (ft, bt) };
+            }
         }
         let mut mesh = b.finish();
         for i in &ents.instances {
@@ -77,9 +114,9 @@ pub fn import(src: &SkpModel) -> ModelData {
             }))
         };
         for d in &src.definitions {
-            meshes.push(build(&d.entities, &color, &mut inst_def, &tags));
+            meshes.push(build(&d.entities, &color, &face_tex, &mut inst_def, &tags));
         }
-        root = build(&src.entities, &color, &mut inst_def, &tags);
+        root = build(&src.entities, &color, &face_tex, &mut inst_def, &tags);
     }
     model.mesh = root;
     for (src_idx, mat, id) in pending_paint {
@@ -126,12 +163,37 @@ pub fn import(src: &SkpModel) -> ModelData {
 /// SketchCAD model → SketchUp model.
 pub fn export(model: &ModelData) -> SkpModel {
     let mut materials: Vec<SkpMaterial> = Vec::new();
-    let mut mat_index: HashMap<Color, usize> = HashMap::new();
-    let mut mat = |c: Option<Color>| -> Option<usize> {
-        let c = c?;
-        Some(*mat_index.entry(c).or_insert_with(|| {
-            let name = crate::ui::tray::MATERIALS.iter().find(|(_, mc)| *mc == c).map(|(n, _)| n.to_string()).unwrap_or_else(|| format!("Color_{:02X}{:02X}{:02X}", c[0], c[1], c[2]));
-            materials.push(SkpMaterial { name, color: c });
+    let mut textures: Vec<SkpTexture> = Vec::new();
+    // A material is a colour *and* a texture, so the same image painted over two colours stays
+    // one image but two materials, as SketchUp expects.
+    let mut mat_index: HashMap<(Color, Option<TexId>), usize> = HashMap::new();
+    let mut tex_index: HashMap<TexId, usize> = HashMap::new();
+    let mut mat = |c: Option<Color>, t: Option<FaceTexture>| -> Option<usize> {
+        if c.is_none() && t.is_none() {
+            return None;
+        }
+        let c = c.unwrap_or([255, 255, 255, 255]);
+        let tid = t.map(|t| t.tex);
+        Some(*mat_index.entry((c, tid)).or_insert_with(|| {
+            let texture = tid.and_then(|id| {
+                let tex = model.textures.get(id)?;
+                Some(*tex_index.entry(id).or_insert_with(|| {
+                    textures.push(SkpTexture {
+                        name: tex.name.clone(),
+                        width: tex.width,
+                        height: tex.height,
+                        size_inches: tex.size,
+                        file: String::new(),
+                        data: tex.data.clone(),
+                    });
+                    textures.len() - 1
+                }))
+            });
+            let name = match (texture, model.textures.get(tid.unwrap_or_default())) {
+                (Some(_), Some(tex)) => tex.name.clone(),
+                _ => crate::ui::tray::MATERIALS.iter().find(|(_, mc)| *mc == c).map(|(n, _)| n.to_string()).unwrap_or_else(|| format!("Color_{:02X}{:02X}{:02X}", c[0], c[1], c[2])),
+            };
+            materials.push(SkpMaterial { name, color: c, texture });
             materials.len() - 1
         }))
     };
@@ -146,8 +208,10 @@ pub fn export(model: &ModelData) -> SkpModel {
                 outer: f.outer.iter().map(|v| p(*v)).collect(),
                 holes: f.holes.iter().map(|h| h.iter().map(|v| p(*v)).collect()).collect(),
                 normal: f.plane.normal.to_array(),
-                front: mat(f.front),
-                back: mat(f.back),
+                front: mat(f.front, f.front_tex),
+                back: mat(f.back, f.back_tex),
+                front_uv: f.front_tex.map(|t| uv_wire(&t.uv)),
+                back_uv: f.back_tex.map(|t| uv_wire(&t.uv)),
             })
             .collect();
         let edges = mesh
@@ -181,6 +245,7 @@ pub fn export(model: &ModelData) -> SkpModel {
         units: Some(format!("{:?}", model.units.unit)),
         camera: Some(SkpCamera { eye: c.eye.to_array(), target: c.target.to_array(), up: [0.0, 0.0, 1.0], perspective: c.perspective, fov: c.fov_y }),
         materials,
+        textures,
         layers: model.tags.iter().map(|t| SkpLayer { name: t.name.clone(), visible: t.visible }).collect(),
         definitions,
         entities: root,
@@ -359,6 +424,89 @@ mod tests {
         let (from_skb, _) = open(&backup).unwrap();
         assert_eq!(from_skb.model.mesh.instances.len(), 3);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A checkerboard PNG, so the test does not depend on any file on disk.
+    fn test_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(8, 8, |x, y| if (x / 4 + y / 4) % 2 == 0 { image::Rgba([220, 40, 40, 255]) } else { image::Rgba([250, 250, 250, 255]) });
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// A textured face survives a round trip through a real `.skp`: the image comes back byte for
+    /// byte, and the texture still lands in the same place on the face.
+    #[test]
+    fn textures_round_trip_through_skp() {
+        if !available() {
+            return;
+        }
+        let png = test_png();
+        let mut model = ModelData::default();
+        let tex = model.textures.insert(sc_geom::Texture { name: "check.png".into(), width: 8, height: 8, size: [24.0, 24.0], data: png.clone() });
+        // A 60" square on the ground, with the texture tiling every 24".
+        let mut b = MeshBuilder::new();
+        let sq = [DVec3::ZERO, DVec3::new(60.0, 0.0, 0.0), DVec3::new(60.0, 60.0, 0.0), DVec3::new(0.0, 60.0, 0.0)];
+        let fid = b.face(&sq, &[], DVec3::Z, Some([255, 255, 255, 255]), None).unwrap();
+        let uv = UvMap { u: sc_math::DVec4::new(1.0 / 24.0, 0.0, 0.0, 0.0), v: sc_math::DVec4::new(0.0, 1.0 / 24.0, 0.0, 0.0) };
+        b.face_mut(fid).front_tex = Some(FaceTexture { tex, uv });
+        model.mesh = b.finish();
+
+        let path = temp("textured.skp");
+        save(&model, &path).unwrap();
+        let (doc, warnings) = open(&path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let back = &doc.model;
+
+        assert_eq!(back.textures.len(), 1, "the texture came back");
+        let got = back.textures.values().next().unwrap();
+        // SketchUp re-encodes the image when it stores it, so compare the pixels, not the bytes.
+        let back_px = image::load_from_memory(&got.data).expect("a decodable image").to_rgba8();
+        let orig_px = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(back_px.dimensions(), orig_px.dimensions());
+        assert_eq!(back_px.as_raw(), orig_px.as_raw(), "every pixel survives");
+        assert_eq!((got.width, got.height), (8, 8));
+        // SketchUp stores the tile size, so it should survive too.
+        assert!((got.size[0] - 24.0).abs() < 1e-6 && (got.size[1] - 24.0).abs() < 1e-6, "tile size {:?}", got.size);
+
+        let face = back.mesh.faces.values().find(|f| f.front_tex.is_some()).expect("face kept its texture");
+        let ft = face.front_tex.unwrap();
+        assert_eq!(ft.tex, back.textures.keys().next().unwrap());
+        // The placement is what matters, not the numbers in it: the same points must map to the
+        // same texture coordinates, up to whole tiles (which are indistinguishable once tiled).
+        for p in [DVec3::ZERO, DVec3::new(60.0, 0.0, 0.0), DVec3::new(24.0, 48.0, 0.0)] {
+            let (want, got) = (uv.at(p), ft.uv.at(p));
+            let d = (want - got).abs();
+            let frac = |x: f64| (x - x.round()).abs();
+            assert!(frac(d.x) < 1e-6 && frac(d.y) < 1e-6, "uv at {p:?}: want {want:?}, got {got:?}");
+        }
+    }
+
+    /// Textures reach the renderer: a textured face produces vertices pointing at a texture
+    /// layer, with coordinates that advance across the face.
+    #[test]
+    fn textured_faces_reach_the_render_scene() {
+        let mut model = ModelData::default();
+        let tex = model.textures.insert(sc_geom::Texture { name: "check.png".into(), width: 8, height: 8, size: [24.0, 24.0], data: test_png() });
+        let mut b = MeshBuilder::new();
+        let sq = [DVec3::ZERO, DVec3::new(48.0, 0.0, 0.0), DVec3::new(48.0, 48.0, 0.0), DVec3::new(0.0, 48.0, 0.0)];
+        let fid = b.face(&sq, &[], DVec3::Z, None, None).unwrap();
+        let uv = UvMap { u: sc_math::DVec4::new(1.0 / 24.0, 0.0, 0.0, 0.0), v: sc_math::DVec4::new(0.0, 1.0 / 24.0, 0.0, 0.0) };
+        b.face_mut(fid).front_tex = Some(FaceTexture { tex, uv });
+        model.mesh = b.finish();
+
+        let layers = std::collections::HashMap::from([(tex, 7u32)]);
+        let opts = sc_render::SceneOptions { style: sc_render::FaceStyle::ShadedWithTextures, tex_layers: layers, ..Default::default() };
+        let scene = sc_render::RenderScene::build(&model.mesh, &opts, |_| false, |_| false);
+        assert!(scene.faces.iter().all(|v| v.tex[0] == 7), "every face vertex points at the uploaded layer");
+        let us: Vec<f32> = scene.faces.iter().map(|v| v.uv[0][0]).collect();
+        let (lo, hi) = (us.iter().cloned().fold(f32::MAX, f32::min), us.iter().cloned().fold(f32::MIN, f32::max));
+        assert!((lo - 0.0).abs() < 1e-5 && (hi - 2.0).abs() < 1e-5, "48\" across a 24\" tile is two repeats, got {lo}..{hi}");
+
+        // The plain Shaded style draws colours only, as in SketchUp.
+        let opts = sc_render::SceneOptions { style: sc_render::FaceStyle::Shaded, tex_layers: std::collections::HashMap::from([(tex, 7u32)]), ..Default::default() };
+        let plain = sc_render::RenderScene::build(&model.mesh, &opts, |_| false, |_| false);
+        assert!(plain.faces.iter().all(|v| v.tex[0] == -1), "no texture in the Shaded style");
     }
 
     /// One of SketchUp's own sample models opens with its components and materials.

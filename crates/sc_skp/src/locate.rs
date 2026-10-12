@@ -93,11 +93,28 @@ fn sdk_from(path: &Path, label: &str) -> Option<Sdk> {
     Some(Sdk { library, search_dirs, label: label.to_string(), arch })
 }
 
-/// Look for the SketchUp C API: `$SKETCHCAD_SKP_SDK`, an unpacked SDK in the usual places, then
-/// SketchUp installations (newest first).
+/// A SketchUp library shipped with SketchCAD itself, so `.skp` files open without anything to
+/// install: next to the executable, or in `SketchCAD.app/Contents/Frameworks`.
+fn bundled_sdk() -> Option<Sdk> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let mut candidates = vec![dir.join("SketchUpAPI.framework"), dir.to_path_buf()];
+    if let Some(contents) = dir.parent() {
+        candidates.insert(0, contents.join("Frameworks/SketchUpAPI.framework"));
+    }
+    candidates.iter().find_map(|p| sdk_from(p, "bundled with SketchCAD"))
+}
+
+/// Look for the SketchUp C API: `$SKETCHCAD_SKP_SDK`, a copy shipped with SketchCAD, an unpacked
+/// SDK in the usual places, then SketchUp installations (newest first).
 pub fn find_sdk() -> Option<Sdk> {
     if let Some(p) = std::env::var_os("SKETCHCAD_SKP_SDK") {
         return sdk_from(Path::new(&p), "SKETCHCAD_SKP_SDK");
+    }
+    // Before anything installed: the bundled copy is the version SketchCAD was tested against, and
+    // an old SketchUp on the machine (which cannot read newer files) must not win over it.
+    if let Some(sdk) = bundled_sdk() {
+        return Some(sdk);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let mut roots: Vec<(PathBuf, String)> = Vec::new();
@@ -214,18 +231,60 @@ pub fn read(sdk: &Sdk, path: &Path) -> Result<SkpModel, String> {
     let json = temp_json("read");
     let r = run(sdk, &["read".as_ref(), path.as_os_str(), json.as_os_str()]).and_then(|_| {
         let bytes = std::fs::read(&json).map_err(|e| e.to_string())?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("Bad converter output: {e}"))
+        let mut model: SkpModel = serde_json::from_slice(&bytes).map_err(|e| format!("Bad converter output: {e}"))?;
+        load_textures(&mut model, &json);
+        Ok(model)
     });
     let _ = std::fs::remove_file(&json);
     r
 }
 
+/// Pull the texture images the converter wrote beside `json` into the model, then delete them.
+/// A texture whose file is missing is dropped, and the materials using it fall back to colour.
+fn load_textures(model: &mut SkpModel, json: &Path) {
+    let dir = json.parent().unwrap_or(Path::new("."));
+    let mut keep: Vec<Option<usize>> = Vec::with_capacity(model.textures.len());
+    let mut loaded: Vec<crate::SkpTexture> = Vec::new();
+    for t in std::mem::take(&mut model.textures) {
+        let file = dir.join(&t.file);
+        let data = std::fs::read(&file).unwrap_or_default();
+        let _ = std::fs::remove_file(&file);
+        if data.is_empty() {
+            keep.push(None);
+            continue;
+        }
+        keep.push(Some(loaded.len()));
+        loaded.push(crate::SkpTexture { file: String::new(), data, ..t });
+    }
+    model.textures = loaded;
+    for m in &mut model.materials {
+        m.texture = m.texture.and_then(|i| keep.get(i).copied().flatten());
+    }
+}
+
 /// Write a `.skp` / `.skb` file (in the newest format the library supports).
 pub fn write(sdk: &Sdk, model: &SkpModel, path: &Path) -> Result<(), String> {
     let json = temp_json("write");
-    std::fs::write(&json, serde_json::to_vec(model).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let r = run(sdk, &["write".as_ref(), json.as_os_str(), path.as_os_str()]);
+    // The converter reads textures from files beside the JSON, the same way it writes them.
+    let mut model = model.clone();
+    let stem = json.with_extension("");
+    let mut files = Vec::new();
+    for (i, t) in model.textures.iter_mut().enumerate() {
+        let ext = Path::new(&t.name).extension().and_then(|e| e.to_str()).filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric())).unwrap_or("png").to_lowercase();
+        let Some(name) = stem.file_name().map(|n| format!("{}-tex{i}.{ext}", n.to_string_lossy())) else { continue };
+        let file = stem.with_file_name(&name);
+        if std::fs::write(&file, &t.data).is_ok() {
+            t.file = name;
+            files.push(file);
+        }
+    }
+    let r = std::fs::write(&json, serde_json::to_vec(&model).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+        .and_then(|_| run(sdk, &["write".as_ref(), json.as_os_str(), path.as_os_str()]));
     let _ = std::fs::remove_file(&json);
+    for f in files {
+        let _ = std::fs::remove_file(f);
+    }
     r
 }
 

@@ -1,7 +1,8 @@
 //! CPU-side scene description handed to the renderer each frame.
 
 use bytemuck::{Pod, Zeroable};
-use sc_geom::{Color, EdgeId, FaceId, Mesh};
+use sc_geom::{Color, EdgeId, FaceId, Mesh, TexId};
+use std::collections::HashMap;
 use sc_math::{DMat4, DVec3};
 
 pub mod flags {
@@ -18,6 +19,11 @@ pub struct FaceVertex {
     pub front: [f32; 4],
     pub back: [f32; 4],
     pub flags: u32,
+    /// Texture coordinates for the front and back side.
+    pub uv: [[f32; 2]; 2],
+    /// Layer of the texture array for each side; -1 where that side is plain colour. The two
+    /// sides are kept apart because a face can carry a different texture on each.
+    pub tex: [i32; 2],
 }
 
 #[repr(C)]
@@ -82,11 +88,14 @@ pub struct SceneOptions {
     pub back_edges: bool,
     pub show_axes: bool,
     pub edge_width: f32,
+    /// Which layer of the renderer's texture array each model texture was uploaded to; comes
+    /// from [`crate::ViewportRenderer::tex_layers`] after the textures have been synced.
+    pub tex_layers: HashMap<TexId, u32>,
 }
 
 impl Default for SceneOptions {
     fn default() -> Self {
-        Self { style: FaceStyle::Shaded, back_edges: false, show_axes: true, edge_width: 1.3 }
+        Self { style: FaceStyle::Shaded, back_edges: false, show_axes: true, edge_width: 1.3, tex_layers: HashMap::new() }
     }
 }
 
@@ -150,10 +159,23 @@ impl RenderScene {
             }
             let flat = tn(face.plane.normal);
             let (front, back) = (rgba(front), rgba(back));
+            // Textures are only drawn in the style that asks for them, matching SketchUp.
+            let side_tex = |ft: Option<sc_geom::FaceTexture>| -> Option<(sc_geom::UvMap, i32)> {
+                if style != FaceStyle::ShadedWithTextures {
+                    return None;
+                }
+                let ft = ft?;
+                Some((ft.uv, *opts.tex_layers.get(&ft.tex)? as i32))
+            };
+            let sides = [side_tex(face.front_tex), side_tex(face.back_tex)];
+            let tex = [sides[0].map_or(-1, |s| s.1), sides[1].map_or(-1, |s| s.1)];
             for tri in mesh.triangulate_face_ids(fid) {
                 for v in tri {
                     let n = smooth.get(&(fid, v)).map_or(flat, |n| tn(*n));
-                    self.faces.push(FaceVertex { pos: t(mesh.pos(v)).as_vec3().to_array(), normal: n.as_vec3().to_array(), front, back, flags: fl });
+                    // The mapping is in the mesh's own space, so sample before `xf` is applied.
+                    let p = mesh.pos(v);
+                    let uv = sides.map(|s| s.map_or([0.0, 0.0], |(m, _)| m.at(p).as_vec2().to_array()));
+                    self.faces.push(FaceVertex { pos: t(p).as_vec3().to_array(), normal: n.as_vec3().to_array(), front, back, flags: fl, uv, tex });
                 }
             }
         }

@@ -15,7 +15,7 @@ pub use instances::{Instance, transform_normal};
 pub use ops::PushPullMode;
 pub use pick::FaceHit;
 
-use sc_math::{DMat4, DVec3, Plane, TOL, closest_on_segment, points_eq, segment_intersection};
+use sc_math::{DMat4, DVec2, DVec3, DVec4, Plane, TOL, closest_on_segment, points_eq, segment_intersection};
 use serde::{Deserialize, Serialize};
 use slotmap::{SlotMap, new_key_type};
 use std::collections::{HashMap, HashSet};
@@ -27,10 +27,97 @@ new_key_type! {
     pub struct InstanceId;
     /// A component (or group) definition; owned by the model, not by a mesh.
     pub struct DefId;
+    /// An image painted on faces; owned by the model, not by a mesh.
+    pub struct TexId;
 }
 
 /// sRGB color with alpha.
 pub type Color = [u8; 4];
+
+/// An image painted on faces.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Texture {
+    /// Name it came in under, e.g. "Roofing_Shingles_Asphalt.jpg".
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Model-space size of one tile, in inches.
+    pub size: [f64; 2],
+    /// The encoded image (PNG, JPEG, ...), kept exactly as it arrived so saving is lossless.
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
+}
+
+/// Image bytes as base64 in JSON. A raw `Vec<u8>` would serialize as a list of numbers and cost
+/// about four bytes of text per byte of image; base64 costs a third of that.
+mod base64_bytes {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn serialize<S: serde::Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        let mut out = String::with_capacity(v.len().div_ceil(3) * 4);
+        for c in v.chunks(3) {
+            let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+            let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+            for i in 0..4 {
+                // The tail is padded with '=' for however many source bytes were missing.
+                out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            }
+        }
+        s.serialize_str(&out)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        let mut out = Vec::with_capacity(s.len() / 4 * 3);
+        let (mut acc, mut bits) = (0u32, 0u32);
+        for ch in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
+            let Some(i) = A.iter().position(|a| *a == ch) else {
+                return Err(serde::de::Error::custom("invalid base64 in texture data"));
+            };
+            acc = acc << 6 | i as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Where a texture sits in space: `u = uv.u.xyz · p + uv.u.w`, and likewise for `v`.
+///
+/// Holding the placement as a projection rather than per-vertex coordinates is what SketchUp does,
+/// and it means a texture survives edits for free — splitting a face, pushing it or healing two
+/// faces back together all keep the same mapping, so the pattern never slides.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct UvMap {
+    pub u: DVec4,
+    pub v: DVec4,
+}
+
+impl UvMap {
+    /// Texture coordinates at a model-space point.
+    pub fn at(&self, p: DVec3) -> DVec2 {
+        DVec2::new(self.u.truncate().dot(p) + self.u.w, self.v.truncate().dot(p) + self.v.w)
+    }
+
+    /// The same mapping for geometry moved by `xf`.
+    ///
+    /// `u` is an affine function of position, which transforms exactly like a plane — by the
+    /// inverse transpose — so a textured group keeps its texture when flattened into world space.
+    pub fn transformed(&self, xf: &DMat4) -> UvMap {
+        let m = xf.inverse().transpose();
+        UvMap { u: m * self.u, v: m * self.v }
+    }
+}
+
+/// A texture painted on one side of a face.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct FaceTexture {
+    pub tex: TexId,
+    pub uv: UvMap,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Vertex {
@@ -65,6 +152,12 @@ pub struct Face {
     pub plane: Plane,
     pub front: Option<Color>,
     pub back: Option<Color>,
+    /// Texture painted on each side, if any. Independent of `front`/`back`, which stay the
+    /// colour shown wherever the texture is not drawn (Monochrome style, entity info).
+    #[serde(default)]
+    pub front_tex: Option<FaceTexture>,
+    #[serde(default)]
+    pub back_tex: Option<FaceTexture>,
 }
 
 impl Face {
@@ -493,6 +586,7 @@ impl Mesh {
         }
         face.plane = face.plane.flipped();
         std::mem::swap(&mut face.front, &mut face.back);
+        std::mem::swap(&mut face.front_tex, &mut face.back_tex);
         self.revision += 1;
     }
 

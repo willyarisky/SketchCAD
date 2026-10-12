@@ -1,3 +1,34 @@
+# Build output
 /target
+/dist
+**/*.rs.bk
+*.pdb
+
+# Test screenshots and scratch output
+/target/screenshots
+
+# SketchCAD / SketchUp temporary files
 *.skcad~
+*.skp~tmp.skp
+# SketchUp backups and models made while testing (examples/ keeps the ones that belong in the repo)
+/*.skp
+/*.skb
+/*.skcad
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS clutter
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and local environment
+*.log
+.env
+.env.*

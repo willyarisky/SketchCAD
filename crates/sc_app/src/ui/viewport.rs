@@ -91,6 +91,11 @@ impl SketchCadApp {
 
             let ppp = ctx.pixels_per_point();
             let size_px = [(rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32];
+            // Textures must be on the GPU before the scene is built: building it needs to know
+            // which array layer each one landed in.
+            if let (Some(renderer), Some(rs)) = (self.renderer.as_mut(), frame.wgpu_render_state()) {
+                renderer.sync_textures(rs, &self.doc.model.textures);
+            }
             let mut scene = self.build_scene(&ov);
             scene.overlay = std::mem::take(&mut ov.lines);
             if let (Some(renderer), Some(rs)) = (self.renderer.as_mut(), frame.wgpu_render_state()) {
@@ -392,7 +397,8 @@ impl SketchCadApp {
             && let Some(scene) = self.viewport.cache.take() {
                 return scene;
             }
-        let opts = SceneOptions { style: st.face_style, back_edges: st.back_edges, show_axes: st.show_axes, edge_width: 1.3 };
+        let tex_layers = self.renderer.as_ref().map(|r| r.tex_layers().clone()).unwrap_or_default();
+        let opts = SceneOptions { style: st.face_style, back_edges: st.back_edges, show_axes: st.show_axes, edge_width: 1.3, tex_layers };
         let hl = crate::scene::Highlights { edges: &ov.highlight_edges, faces: &ov.highlight_faces, instances: &ov.highlight_instances };
         let mut scene = crate::scene::build_scene(&self.doc, &opts, &hl);
         scene.show_background = st.show_sky_ground;

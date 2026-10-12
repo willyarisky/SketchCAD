@@ -411,3 +411,43 @@ fn open_sketchup_file() {
     h.run_steps(4);
     save(&mut h, "skp_car_sedan");
 }
+
+/// A textured face really reaches the screen: a red/white checker laid on the ground shows both
+/// its colours in the viewport, and switching to the plain Shaded style hides the pattern.
+#[test]
+fn textured_face_renders() {
+    let mut h = harness(LaunchOptions::default());
+    {
+        let app = h.state_mut();
+        let png = {
+            let img = image::RgbaImage::from_fn(16, 16, |x, y| if (x / 8 + y / 8) % 2 == 0 { image::Rgba([230, 20, 20, 255]) } else { image::Rgba([255, 255, 255, 255]) });
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        let m = &mut app.doc.model;
+        let tex = m.textures.insert(sc_geom::Texture { name: "check.png".into(), width: 16, height: 16, size: [40.0, 40.0], data: png });
+        let mut b = sc_geom::MeshBuilder::new();
+        let sq = [DVec3::ZERO, DVec3::new(400.0, 0.0, 0.0), DVec3::new(400.0, 400.0, 0.0), DVec3::new(0.0, 400.0, 0.0)];
+        let f = b.face(&sq, &[], DVec3::Z, None, None).unwrap();
+        let uv = sc_geom::UvMap { u: sc_math::DVec4::new(1.0 / 40.0, 0.0, 0.0, 0.0), v: sc_math::DVec4::new(0.0, 1.0 / 40.0, 0.0, 0.0) };
+        b.face_mut(f).front_tex = Some(sc_geom::FaceTexture { tex, uv });
+        m.mesh = b.finish();
+        app.pending_zoom_extents = true;
+    }
+    h.run_steps(6);
+
+    // Count how much of the viewport is the texture's red, which no other part of the UI uses.
+    let reds = |h: &mut Harness<SketchCadApp>| {
+        let img = h.render().expect("render");
+        img.pixels().filter(|p| p.0[0] > 170 && p.0[1] < 110 && p.0[2] < 110).count()
+    };
+    let textured = reds(&mut h);
+    assert!(textured > 2000, "the checker pattern should cover a good part of the view, got {textured} red pixels");
+    save(&mut h, "textured_face");
+
+    h.state_mut().doc.model.style.face_style = sc_render::FaceStyle::Shaded;
+    h.run_steps(4);
+    let plain = reds(&mut h);
+    assert!(plain * 10 < textured, "Shaded style should drop the texture: {plain} vs {textured}");
+}

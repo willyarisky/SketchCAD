@@ -60,6 +60,11 @@ impl MeshBuilder {
     }
 
     /// A face facing `normal`. Loop edges that don't exist yet are created (plain edges).
+    /// A face already added, so callers can set properties `face` does not take (textures).
+    pub fn face_mut(&mut self, f: FaceId) -> &mut Face {
+        &mut self.mesh.faces[f]
+    }
+
     pub fn face(&mut self, outer: &[DVec3], holes: &[Vec<DVec3>], normal: DVec3, front: Option<Color>, back: Option<Color>) -> Option<FaceId> {
         let n = normal.try_normalize()?;
         let mut lp = |pts: &[DVec3]| -> Vec<VertexId> {
@@ -94,7 +99,7 @@ impl MeshBuilder {
                 h.reverse();
             }
         }
-        let face = Face { outer, holes, plane, front, back };
+        let face = Face { outer, holes, plane, front, back, front_tex: None, back_tex: None };
         for (a, b) in face.loop_pairs() {
             self.mesh.insert_edge_raw(a, b, None);
         }

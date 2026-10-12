@@ -17,6 +17,10 @@ struct Globals {
 
 @group(0) @binding(0) var<uniform> g: Globals;
 
+// Face textures, all resampled to one size so the whole model draws in a single pass.
+@group(1) @binding(0) var tex_array: texture_2d_array<f32>;
+@group(1) @binding(1) var tex_sampler: sampler;
+
 // ---------------------------------------------------------------------------
 // Background: sky gradient + ground, evaluated per pixel from the view ray.
 
@@ -57,6 +61,8 @@ struct FaceIn {
     @location(2) front: vec4<f32>,
     @location(3) back: vec4<f32>,
     @location(4) flags: u32,
+    @location(5) uv: vec4<f32>,
+    @location(6) tex: vec2<i32>,
 };
 
 struct FaceOut {
@@ -66,6 +72,9 @@ struct FaceOut {
     @location(2) front: vec4<f32>,
     @location(3) back: vec4<f32>,
     @location(4) @interpolate(flat) flags: u32,
+    // xy: front texture coords, zw: back texture coords
+    @location(5) uv: vec4<f32>,
+    @location(6) @interpolate(flat) tex: vec2<i32>,
 };
 
 @vertex
@@ -77,6 +86,8 @@ fn vs_face(in: FaceIn) -> FaceOut {
     o.front = in.front;
     o.back = in.back;
     o.flags = in.flags;
+    o.uv = in.uv;
+    o.tex = in.tex;
     return o;
 }
 
@@ -94,9 +105,21 @@ fn fs_face(in: FaceOut) -> @location(0) vec4<f32> {
     let facing = dot(n, to_eye) >= 0.0;
     var base = in.back;
     var ne = -n;
+    var uv = in.uv.zw;
+    var layer = in.tex.y;
     if (facing) {
         base = in.front;
         ne = n;
+        uv = in.uv.xy;
+        layer = in.tex.x;
+    }
+    // Sampled unconditionally: a texture fetch must not sit in non-uniform control flow, so the
+    // layer is clamped and the result discarded instead of branching around the fetch.
+    let texel = textureSample(tex_array, tex_sampler, uv, max(layer, 0));
+    if (layer >= 0) {
+        // The texture replaces the colour rather than tinting it: the stored colour is the
+        // texture's own average, kept only for styles that do not draw textures.
+        base = vec4(texel.rgb, base.a * texel.a);
     }
     var shade = 1.0;
     if ((in.flags & FLAG_UNLIT) == 0u) {

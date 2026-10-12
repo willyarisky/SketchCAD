@@ -15,7 +15,7 @@ mod sdk;
 mod write;
 
 use sdk::{Api, Ref, SU_ERROR_NONE};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     if let Err(e) = run() {
@@ -58,14 +58,16 @@ fn library_version(api: &Api) -> String {
 fn command(api: &Api, args: &[String]) -> Result<(), String> {
     match args {
         [cmd, input, output] if cmd == "read" => {
-            let model = read::read(api, input.as_ref(), &library_version(api))?;
+            let model = read::read(api, input.as_ref(), output.as_ref(), &library_version(api))?;
             let json = serde_json::to_vec(&model).map_err(|e| e.to_string())?;
             std::fs::write(output, json).map_err(|e| format!("Could not write {output}: {e}"))
         }
         [cmd, input, output] if cmd == "write" => {
             let bytes = std::fs::read(input).map_err(|e| format!("Could not read {input}: {e}"))?;
             let model: sc_skp::SkpModel = serde_json::from_slice(&bytes).map_err(|e| format!("Bad model description: {e}"))?;
-            write::write(api, &model, output.as_ref())
+            // Texture images sit beside the JSON we were handed.
+            let dir = Path::new(input).parent().unwrap_or(Path::new("."));
+            write::write(api, &model, dir, output.as_ref())
         }
         [cmd, output] if cmd == "version" => {
             let v = library_version(api);

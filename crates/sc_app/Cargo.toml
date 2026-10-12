@@ -24,6 +24,10 @@ rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+# Linux needs a windowing backend; both are loaded at run time, so the binary runs on X11 and Wayland.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { workspace = true, features = ["x11", "wayland"] }
+
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["eframe", "wgpu", "snapshot"] }
 slotmap.workspace = true

@@ -23,6 +23,9 @@ pub struct SkpModel {
     pub camera: Option<SkpCamera>,
     #[serde(default)]
     pub materials: Vec<SkpMaterial>,
+    /// Images used by textured materials.
+    #[serde(default)]
+    pub textures: Vec<SkpTexture>,
     /// Layers/tags other than "Layer0" (untagged).
     #[serde(default)]
     pub layers: Vec<SkpLayer>,
@@ -47,8 +50,45 @@ pub struct SkpCamera {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkpMaterial {
     pub name: String,
-    /// sRGB + alpha.
+    /// sRGB + alpha. For a textured material this is its average colour, used wherever the
+    /// texture cannot be shown (Monochrome style, thumbnails).
     pub color: [u8; 4],
+    /// Index into [`SkpModel::textures`].
+    #[serde(default)]
+    pub texture: Option<usize>,
+}
+
+/// An image used by a textured material.
+///
+/// The encoded bytes do not travel in the JSON: the converter writes each image to a file beside
+/// it (`file`) and [`locate::read`] loads them into `data`, so a megabyte of PNG never has to be
+/// escaped into a JSON string.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SkpTexture {
+    /// The image's name inside the `.skp`, e.g. "shingles.jpg".
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Model-space size of one tile, in inches (SketchUp's s/t scale).
+    pub size_inches: [f64; 2],
+    /// File holding the encoded image, beside the JSON. Relative to the JSON's folder.
+    #[serde(default)]
+    pub file: String,
+    /// The encoded image (PNG/JPEG/...), filled in once `file` has been read.
+    #[serde(skip)]
+    pub data: Vec<u8>,
+}
+
+/// How a texture lies on a face: an affine map from model space to texture space, so
+/// `u = dot(p, u[0..3]) + u[3]` and likewise for `v`.
+///
+/// SketchUp stores texture placement per face, and for an undistorted texture the mapping is
+/// exactly affine. Keeping it as a projection rather than per-vertex UVs means it survives
+/// splitting and push/pull the way SketchUp's own does.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SkpUv {
+    pub u: [f64; 4],
+    pub v: [f64; 4],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -90,6 +130,11 @@ pub struct SkpFace {
     pub front: Option<usize>,
     #[serde(default)]
     pub back: Option<usize>,
+    /// Where the front/back material's texture sits on this face.
+    #[serde(default)]
+    pub front_uv: Option<SkpUv>,
+    #[serde(default)]
+    pub back_uv: Option<SkpUv>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -80,6 +80,8 @@ impl Mesh {
             plane: Plane::new(self.pos(map[&f.outer[0]]), f.plane.normal),
             front: f.front,
             back: f.back,
+            front_tex: f.front_tex,
+            back_tex: f.back_tex,
         };
         if !forward && !carving {
             top.outer.reverse();
@@ -96,7 +98,7 @@ impl Mesh {
             let quad = if forward || carving { vec![a, b, tb, ta] } else { vec![b, a, ta, tb] };
             let pts: Vec<DVec3> = quad.iter().map(|v| self.pos(*v)).collect();
             if let Some(pl) = Plane::from_polygon(&pts) {
-                sides.push(Face { outer: quad, holes: Vec::new(), plane: pl, front: None, back: None });
+                sides.push(Face { outer: quad, holes: Vec::new(), plane: pl, front: None, back: None, front_tex: None, back_tex: None });
             }
         }
 
@@ -255,7 +257,7 @@ impl Mesh {
                     }
                     let pts: Vec<DVec3> = poly.iter().map(|v| self.pos(*v)).collect();
                     if let Some(pl) = Plane::from_polygon(&pts)
-                        && let Some(id) = self.insert_face_raw(Face { outer: poly, holes: Vec::new(), plane: pl, front: f.front, back: f.back }) {
+                        && let Some(id) = self.insert_face_raw(Face { outer: poly, holes: Vec::new(), plane: pl, front: f.front, back: f.back, front_tex: f.front_tex, back_tex: f.back_tex }) {
                             new_faces.push(id);
                         }
                     // Smooth the sweep along curved profiles and around curved path corners.
@@ -291,7 +293,7 @@ impl Mesh {
                     for h in &mut holes {
                         h.reverse();
                     }
-                    if let Some(id) = self.insert_face_raw(Face { outer, holes, plane: pl, front: f.front, back: f.back }) {
+                    if let Some(id) = self.insert_face_raw(Face { outer, holes, plane: pl, front: f.front, back: f.back, front_tex: f.front_tex, back_tex: f.back_tex }) {
                         new_faces.push(id);
                     }
                 }

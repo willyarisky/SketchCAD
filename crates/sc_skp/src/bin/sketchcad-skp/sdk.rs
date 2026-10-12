@@ -187,6 +187,19 @@ api! {
     SUMaterialSetColor: fn(Ref, *const Col) -> R;
     SUMaterialGetColor: fn(Ref, *mut Col) -> R;
     SUMaterialGetTexture: fn(Ref, *mut Ref) -> R;
+    SUMaterialSetTexture: fn(Ref, Ref) -> R;
+    SUTextureGetDimensions: fn(Ref, *mut usize, *mut usize, *mut f64, *mut f64) -> R;
+    SUTextureGetFileName: fn(Ref, *mut Ref) -> R;
+    // Textures move as encoded image files (SUTextureWriteToFile / SUTextureCreateFromFile)
+    // rather than raw pixels, whose channel order and row direction vary between versions.
+    SUTextureWriteToFile: fn(Ref, *const c_char) -> R;
+    SUTextureCreateFromFile: fn(*mut Ref, *const c_char, f64, f64) -> R;
+    SUTextureRelease: fn(*mut Ref) -> R;
+
+    SUFaceGetUVHelper: fn(Ref, bool, bool, Ref, *mut Ref) -> R;
+    SUUVHelperGetFrontUVQ: fn(Ref, *const Pt, *mut Pt) -> R;
+    SUUVHelperGetBackUVQ: fn(Ref, *const Pt, *mut Pt) -> R;
+    SUUVHelperRelease: fn(*mut Ref) -> R;
     SUMaterialGetUseOpacity: fn(Ref, *mut bool) -> R;
     SUMaterialGetOpacity: fn(Ref, *mut f64) -> R;
     SUMaterialSetOpacity: fn(Ref, f64) -> R;

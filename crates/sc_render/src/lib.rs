@@ -11,7 +11,9 @@ pub use scene::{FaceStyle, FaceVertex, LineInstance, RenderScene, SceneOptions, 
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
+use sc_geom::{TexId, Texture};
 use sc_math::DVec2;
+use std::collections::HashMap;
 
 const SAMPLES: u32 = 4;
 // egui composites in gamma space, so the viewport renders gamma-space colors into a plain UNORM target.
@@ -85,6 +87,93 @@ pub struct ViewportRenderer {
     overlay_vb: DynBuffer,
     targets: Option<Targets>,
     texture_id: Option<egui::TextureId>,
+    tex_bgl: wgpu::BindGroupLayout,
+    textures: FaceTextures,
+}
+
+/// Every face texture in one array, so a model draws in a single pass however many it uses.
+/// Images are resampled to a common size, which an array requires.
+struct FaceTextures {
+    bind_group: wgpu::BindGroup,
+    layers: HashMap<TexId, u32>,
+    /// What the array currently holds, to skip the upload when nothing changed.
+    key: Vec<TexId>,
+}
+
+/// Edge length every texture is resampled to.
+pub const TEX_SIZE: u32 = 256;
+/// Textures beyond this are shown as plain colour; keeps the array under ~43 MB.
+pub const MAX_TEXTURES: usize = 128;
+
+fn mip_levels() -> u32 {
+    TEX_SIZE.ilog2() + 1
+}
+
+/// Build the bind group for `layers` worth of image data (`data[layer][mip]`, RGBA8).
+fn make_tex_bind_group(device: &wgpu::Device, queue: &wgpu::Queue, bgl: &wgpu::BindGroupLayout, data: &[Vec<Vec<u8>>]) -> wgpu::BindGroup {
+    let count = data.len().max(1) as u32;
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("face textures"),
+        size: wgpu::Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: count },
+        mip_level_count: mip_levels(),
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // Plain UNORM, not _Srgb: the viewport works in gamma space (see COLOR_FORMAT), so
+        // texels must arrive the same way face colours do rather than being converted to linear.
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (layer, mips) in data.iter().enumerate() {
+        for (level, px) in mips.iter().enumerate() {
+            let size = (TEX_SIZE >> level).max(1);
+            if px.len() < (size * size * 4) as usize {
+                continue;
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer as u32 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                px,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size * 4), rows_per_image: Some(size) },
+                wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            );
+        }
+    }
+    let view = tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("face textures"),
+        // Textures tile across a face, so both axes repeat.
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..Default::default()
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("face textures"),
+        layout: bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }],
+    })
+}
+
+/// Decode an image and resample it to the array's size, with a full mip chain.
+fn decode_mips(data: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let img = image::load_from_memory(data).ok()?.to_rgba8();
+    let mut level = image::imageops::resize(&img, TEX_SIZE, TEX_SIZE, image::imageops::FilterType::CatmullRom);
+    let mut out = vec![level.as_raw().clone()];
+    for i in 1..mip_levels() {
+        let size = (TEX_SIZE >> i).max(1);
+        level = image::imageops::resize(&level, size, size, image::imageops::FilterType::Triangle);
+        out.push(level.as_raw().clone());
+    }
+    Some(out)
 }
 
 impl ViewportRenderer {
@@ -103,9 +192,26 @@ impl ViewportRenderer {
                 count: None,
             }],
         });
+        let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("face textures"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("viewport layout"),
-            bind_group_layouts: &[Some(&bgl)],
+            bind_group_layouts: &[Some(&bgl), Some(&tex_bgl)],
             immediate_size: 0,
         });
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -120,7 +226,7 @@ impl ViewportRenderer {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
         });
 
-        let face_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Uint32];
+        let face_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Uint32, 5 => Float32x4, 6 => Sint32x2];
         let face_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<FaceVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -171,8 +277,11 @@ impl ViewportRenderer {
         let lines_hidden = make("hidden lines", "vs_line", "fs_line", &[Some(line_layout.clone())], false, C::Less);
         let lines_overlay = make("overlay lines", "vs_line", "fs_line", &[Some(line_layout)], false, C::Always);
 
+        let textures = FaceTextures { bind_group: make_tex_bind_group(device, &rs.queue, &tex_bgl, &[]), layers: HashMap::new(), key: Vec::new() };
         let vb = wgpu::BufferUsages::VERTEX;
         Self {
+            tex_bgl,
+            textures,
             bg,
             faces,
             faces_xray,
@@ -218,6 +327,38 @@ impl ViewportRenderer {
             None => self.texture_id = Some(renderer.register_native_texture(device, &resolve, wgpu::FilterMode::Linear)),
         }
         self.targets = Some(Targets { size, msaa, resolve, depth });
+    }
+
+    /// Upload the model's textures, replacing whatever the array held. Does nothing when the same
+    /// set is already resident, so this is cheap to call every frame.
+    ///
+    /// Images that cannot be decoded, and any past [`MAX_TEXTURES`], are left out; faces using
+    /// them fall back to their plain colour.
+    pub fn sync_textures(&mut self, rs: &egui_wgpu::RenderState, textures: &slotmap::SlotMap<TexId, Texture>) {
+        let key: Vec<TexId> = textures.keys().collect();
+        if key == self.textures.key {
+            return;
+        }
+        let mut layers = HashMap::new();
+        let mut data = Vec::new();
+        for (id, t) in textures {
+            if data.len() >= MAX_TEXTURES {
+                log::warn!("model has more than {MAX_TEXTURES} textures; the rest are shown as plain colours");
+                break;
+            }
+            let Some(mips) = decode_mips(&t.data) else {
+                log::warn!("could not decode texture {:?}", t.name);
+                continue;
+            };
+            layers.insert(id, data.len() as u32);
+            data.push(mips);
+        }
+        self.textures = FaceTextures { bind_group: make_tex_bind_group(&rs.device, &rs.queue, &self.tex_bgl, &data), layers, key };
+    }
+
+    /// Which array layer each model texture went to; feeds [`SceneOptions::tex_layers`].
+    pub fn tex_layers(&self) -> &HashMap<TexId, u32> {
+        &self.textures.layers
     }
 
     /// Render the scene and return the egui texture holding the image.
@@ -271,6 +412,7 @@ impl ViewportRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_bind_group(1, &self.textures.bind_group, &[]);
             if scene.show_background {
                 pass.set_pipeline(&self.bg);
                 pass.draw(0..3, 0..1);

@@ -180,6 +180,9 @@ impl Mesh {
                 plane: Plane::new(p0, n),
                 front: f.front,
                 back: f.back,
+                // The mapping is defined in model space, so it has to follow the transform.
+                front_tex: f.front_tex.map(|t| FaceTexture { uv: t.uv.transformed(xf), ..t }),
+                back_tex: f.back_tex.map(|t| FaceTexture { uv: t.uv.transformed(xf), ..t }),
             };
             // A mirroring transform flips loop winding; keep loops CCW around the normal.
             if xf.determinant() < 0.0 {

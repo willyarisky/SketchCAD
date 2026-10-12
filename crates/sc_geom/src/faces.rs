@@ -181,6 +181,8 @@ impl Mesh {
             normal: DVec3,
             front: Option<Color>,
             back: Option<Color>,
+            front_tex: Option<FaceTexture>,
+            back_tex: Option<FaceTexture>,
         }
         let to_cover = |f: &Face| Cover {
             outer: f.outer.iter().map(|v| plane.to_2d(self.pos(*v))).collect(),
@@ -188,6 +190,8 @@ impl Mesh {
             normal: f.plane.normal,
             front: f.front,
             back: f.back,
+            front_tex: f.front_tex,
+            back_tex: f.back_tex,
         };
         let covers: Vec<(Option<FaceId>, Cover)> = old
             .iter()
@@ -207,19 +211,19 @@ impl Mesh {
                 let b = r.outer[(i + 1) % r.outer.len()];
                 self.edge_between(a, b).is_some_and(|e| new_edges.contains(&e))
             });
-            let (normal, front, back) = match covered {
+            let (normal, front, back, front_tex, back_tex) = match covered {
                 Some((Some(fid), c)) => {
                     if same_region(&self.faces[*fid], &r) {
                         keep.insert(*fid);
                         continue;
                     }
-                    (c.normal, c.front, c.back)
+                    (c.normal, c.front, c.back, c.front_tex, c.back_tex)
                 }
-                Some((None, c)) => (c.normal, c.front, c.back),
-                None if uses_new => (self.default_normal(&plane, &r.outer), None, None),
+                Some((None, c)) => (c.normal, c.front, c.back, c.front_tex, c.back_tex),
+                None if uses_new => (self.default_normal(&plane, &r.outer), None, None, None, None),
                 None => continue,
             };
-            let mut face = Face { outer: r.outer, holes: r.holes, plane, front, back };
+            let mut face = Face { outer: r.outer, holes: r.holes, plane, front, back, front_tex, back_tex };
             // Traced loops are CCW around `plane.normal`; holes are CW.
             for h in &mut face.holes {
                 if signed_area(&poly(h)) > 0.0 {

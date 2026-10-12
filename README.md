@@ -17,6 +17,20 @@ cargo run --release -p sc_app -- model.skcad   # open a file
 Other flags: `--tool "Push/Pull"` (start with a tool), `--screenshot out.png` (save the window and quit),
 `--no-extensions` (don't start Ruby).
 
+## Release builds
+
+`scripts/build-release.sh` builds every platform from a Mac into `dist/` (setup steps are at the top
+of the script):
+
+| Package | Contents | Runs on |
+|---|---|---|
+| `SketchCAD-<v>-macos-universal.zip` | `SketchCAD.app` (Apple Silicon + Intel), ad-hoc signed | macOS 11+ |
+| `SketchCAD-<v>-windows-x86_64.zip` | `sketchcad.exe`, `sketchcad-skp.exe` | Windows 10+ (64-bit) |
+| `SketchCAD-<v>-linux-x86_64.tar.gz` / `-linux-aarch64.tar.gz` | `sketchcad` | glibc 2.31+ (Ubuntu 20.04, Debian 11), X11 or Wayland, Vulkan or OpenGL |
+
+The macOS app is not notarized: the first time, right-click it and choose **Open**. SketchUp file
+support needs Trimble's SketchUp library on that machine (not available for Linux); extensions need Ruby.
+
 ## Test
 
 ```sh

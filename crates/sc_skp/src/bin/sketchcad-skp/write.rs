@@ -8,16 +8,18 @@ use std::path::Path;
 struct Writer<'a> {
     api: &'a Api,
     src: &'a SkpModel,
+    /// Folder the texture images sit in, beside the input JSON.
+    tex_dir: &'a Path,
     materials: Vec<Ref>,
     layers: Vec<Ref>,
     /// Component definitions (`None` for groups, which are created per instance).
     defs: Vec<Option<Ref>>,
 }
 
-pub fn write(api: &Api, src: &SkpModel, path: &Path) -> Result<(), String> {
+pub fn write(api: &Api, src: &SkpModel, tex_dir: &Path, path: &Path) -> Result<(), String> {
     let mut m = Ref::NULL;
     ok(unsafe { (api.SUModelCreate)(&mut m) }, "Creating a SketchUp model")?;
-    let mut w = Writer { api, src, materials: Vec::new(), layers: Vec::new(), defs: Vec::new() };
+    let mut w = Writer { api, src, tex_dir, materials: Vec::new(), layers: Vec::new(), defs: Vec::new() };
     let res = w.write_model(m).and_then(|_| ok(unsafe { (api.SUModelSaveToFile)(m, cstr(&path.to_string_lossy()).as_ptr()) }, "Saving the SketchUp file"));
     unsafe { (api.SUModelRelease)(&mut m) };
     res
@@ -62,6 +64,20 @@ impl Writer<'_> {
                 if alpha < 255 {
                     (api.SUMaterialSetUseOpacity)(r, true);
                     (api.SUMaterialSetOpacity)(r, alpha as f64 / 255.0);
+                }
+                if let Some(t) = mat.texture.and_then(|i| src.textures.get(i)).filter(|t| !t.file.is_empty()) {
+                    // Unlike SUTextureGetDimensions, whose scale is tiles per inch, this one takes
+                    // the tile's size directly.
+                    let size = |x: f64| if x.abs() > 1e-12 { x } else { 1.0 };
+                    let mut tex = Ref::NULL;
+                    let file = self.tex_dir.join(&t.file);
+                    if (api.SUTextureCreateFromFile)(&mut tex, cstr(&file.to_string_lossy()).as_ptr(), size(t.size_inches[0]), size(t.size_inches[1])) == SU_ERROR_NONE && !tex.is_null() {
+                        // The material owns the texture once it is set; releasing it here would
+                        // leave the material pointing at freed memory.
+                        if (api.SUMaterialSetTexture)(r, tex) != SU_ERROR_NONE {
+                            (api.SUTextureRelease)(&mut tex);
+                        }
+                    }
                 }
                 self.materials.push(r);
             }
@@ -129,9 +145,30 @@ impl Writer<'_> {
         }
     }
 
-    fn material_input(&self, idx: Option<usize>) -> Option<MaterialInput> {
+    /// The material for one side of a face, with where its texture sits.
+    ///
+    /// SketchUp takes texture placement as sample points: a handful of the face's own vertices
+    /// paired with their texture coordinates, from which it recovers the mapping. It accepts 0,
+    /// 1, 2 or 4 of them, so a quad or larger gives 4 (position, rotation and both scales) and a
+    /// triangle gives 2 (everything but a differing scale per axis).
+    fn material_input(&self, idx: Option<usize>, uv: Option<&SkpUv>, outer: &[usize], verts: &[Pt]) -> Option<MaterialInput> {
         let material = *self.materials.get(idx?)?;
-        Some(MaterialInput { num_uv_coords: 0, uv_coords: [[0.0; 2]; 4], vertex_indices: [0; 4], material })
+        let mut mi = MaterialInput { num_uv_coords: 0, uv_coords: [[0.0; 2]; 4], vertex_indices: [0; 4], material };
+        if let Some(uv) = uv {
+            let n = if outer.len() >= 4 { 4 } else { 2 };
+            if outer.len() >= n {
+                let at = |c: [f64; 4], p: &Pt| c[0] * p.x + c[1] * p.y + c[2] * p.z + c[3];
+                for i in 0..n {
+                    // Spread the samples around the loop so they are never near-collinear.
+                    let vi = outer[i * outer.len() / n];
+                    let p = &verts[vi];
+                    mi.vertex_indices[i] = vi;
+                    mi.uv_coords[i] = [at(uv.u, p), at(uv.v, p)];
+                }
+                mi.num_uv_coords = n;
+            }
+        }
+        Some(mi)
     }
 
     /// Put `src`'s faces, edges and instances into `ents`.
@@ -201,10 +238,10 @@ impl Writer<'_> {
                             (api.SULoopInputRelease)(&mut hl);
                         }
                     }
-                    if let Some(mi) = self.material_input(f.front) {
+                    if let Some(mi) = self.material_input(f.front, f.front_uv.as_ref(), outer, &verts) {
                         (api.SUGeometryInputFaceSetFrontMaterial)(geom, fi, &mi);
                     }
-                    if let Some(mi) = self.material_input(f.back) {
+                    if let Some(mi) = self.material_input(f.back, f.back_uv.as_ref(), outer, &verts) {
                         (api.SUGeometryInputFaceSetBackMaterial)(geom, fi, &mi);
                     }
                 }
