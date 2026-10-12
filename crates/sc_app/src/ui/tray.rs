@@ -5,28 +5,9 @@ use super::icons::{Icon, paint};
 use crate::app::SketchCadApp;
 use crate::tools::ToolId;
 use egui::{Color32, CollapsingHeader, Frame, Margin, RichText};
+use crate::materials::MATERIALS;
 use sc_geom::Color;
 use sc_render::FaceStyle;
-
-/// Built-in material library (colors only for now; textures come with the material editor).
-pub const MATERIALS: &[(&str, Color)] = &[
-    ("Brick Red", [178, 34, 34, 255]),
-    ("Terracotta", [204, 102, 51, 255]),
-    ("Sandstone", [222, 196, 150, 255]),
-    ("Concrete", [170, 170, 165, 255]),
-    ("Asphalt", [70, 70, 75, 255]),
-    ("Light Wood", [214, 170, 110, 255]),
-    ("Dark Wood", [120, 72, 40, 255]),
-    ("Grass", [96, 150, 60, 255]),
-    ("Hedge", [50, 100, 45, 255]),
-    ("Water", [64, 140, 200, 255]),
-    ("Glass", [160, 200, 230, 110]),
-    ("Roof Slate", [90, 100, 115, 255]),
-    ("Plaster", [240, 236, 225, 255]),
-    ("Charcoal", [40, 40, 40, 255]),
-    ("Gold", [212, 175, 55, 255]),
-    ("Sky Blue", [135, 190, 235, 255]),
-];
 
 fn c32(c: Color) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
@@ -115,36 +96,83 @@ impl SketchCadApp {
         }
     }
 
+    /// The tile shown on a swatch, rendered and uploaded once per session.
+    fn material_preview(&mut self, ctx: &egui::Context, name: &'static str, p: crate::materials::Pattern, color: Color) -> egui::TextureId {
+        if let Some(h) = self.material_previews.get(name) {
+            return h.id();
+        }
+        let img = crate::materials::render(p, color);
+        let side = crate::materials::TILE_PX as usize;
+        let h = ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([side, side], img.as_raw()), egui::TextureOptions::LINEAR);
+        let id = h.id();
+        self.material_previews.insert(name, h);
+        id
+    }
+
+    /// Choose a palette material, putting its tile into the model the first time it is used.
+    pub fn pick_material(&mut self, def: &'static crate::materials::MaterialDef) {
+        self.material = def.color;
+        self.material_tex = def.pattern.map(|p| {
+            // One copy per material: painting the same brick twice must not store it twice.
+            let existing = self.doc.model.textures.iter().find(|(_, t)| t.name == def.name).map(|(id, _)| id);
+            let id = existing.unwrap_or_else(|| {
+                self.doc.model.textures.insert(sc_geom::Texture {
+                    name: def.name.to_string(),
+                    width: crate::materials::TILE_PX,
+                    height: crate::materials::TILE_PX,
+                    size: [def.tile, def.tile],
+                    data: crate::materials::render_png(p, def.color),
+                })
+            });
+            (id, def.tile)
+        });
+    }
+
     fn materials(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             swatch(ui, self.material);
-            let name = MATERIALS.iter().find(|(_, c)| *c == self.material).map_or("Custom", |(n, _)| n);
+            let name = MATERIALS.iter().find(|m| m.color == self.material).map_or("Custom", |m| m.name);
             ui.label(name);
         });
         ui.add_space(4.0);
         let per_row = 6;
+        let mut chosen: Option<&'static crate::materials::MaterialDef> = None;
         egui::Grid::new("materials").spacing([4.0, 4.0]).show(ui, |ui| {
-            for (i, (name, c)) in MATERIALS.iter().enumerate() {
+            for (i, def) in MATERIALS.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
-                ui.painter().rect_filled(rect, 3.0, c32(*c));
-                if *c == self.material {
+                match def.pattern {
+                    // Show the real tile, so the swatch is what you will actually get.
+                    Some(p) => {
+                        let tex = self.material_preview(ui.ctx(), def.name, p, def.color);
+                        ui.painter().image(tex, rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                    None => {
+                        ui.painter().rect_filled(rect, 3.0, c32(def.color));
+                    }
+                }
+                if def.color == self.material {
                     ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(2.0, Color32::from_rgb(30, 90, 200)), egui::StrokeKind::Outside);
                 }
-                if resp.on_hover_text(*name).clicked() {
-                    self.material = *c;
-                    self.set_tool(ToolId::PaintBucket);
+                if resp.on_hover_text(def.name).clicked() {
+                    chosen = Some(def);
                 }
                 if (i + 1) % per_row == 0 {
                     ui.end_row();
                 }
             }
         });
+        if let Some(def) = chosen {
+            self.pick_material(def);
+            self.set_tool(ToolId::PaintBucket);
+        }
         ui.horizontal(|ui| {
             ui.label("Custom");
             let mut rgba = egui::Rgba::from(c32(self.material));
             if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::OnlyBlend).changed() {
                 let c = Color32::from(rgba);
                 self.material = [c.r(), c.g(), c.b(), c.a()];
+                // A hand-picked colour is a plain colour; drop any pattern that was selected.
+                self.material_tex = None;
                 self.set_tool(ToolId::PaintBucket);
             }
         });

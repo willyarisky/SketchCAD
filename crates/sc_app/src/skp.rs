@@ -191,7 +191,7 @@ pub fn export(model: &ModelData) -> SkpModel {
             });
             let name = match (texture, model.textures.get(tid.unwrap_or_default())) {
                 (Some(_), Some(tex)) => tex.name.clone(),
-                _ => crate::ui::tray::MATERIALS.iter().find(|(_, mc)| *mc == c).map(|(n, _)| n.to_string()).unwrap_or_else(|| format!("Color_{:02X}{:02X}{:02X}", c[0], c[1], c[2])),
+                _ => crate::materials::MATERIALS.iter().find(|m| m.color == c).map(|m| m.name.to_string()).unwrap_or_else(|| format!("Color_{:02X}{:02X}{:02X}", c[0], c[1], c[2])),
             };
             materials.push(SkpMaterial { name, color: c, texture });
             materials.len() - 1

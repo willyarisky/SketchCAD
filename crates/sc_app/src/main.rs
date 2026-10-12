@@ -9,6 +9,7 @@ mod demo;
 mod document;
 mod groups;
 mod inference;
+mod materials;
 mod plugins;
 mod scene;
 mod scenes;

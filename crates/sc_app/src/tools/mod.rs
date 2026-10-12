@@ -136,6 +136,8 @@ pub struct ToolCx<'a> {
     pub mods: egui::Modifiers,
     pub vcb: &'a mut Vcb,
     pub material: &'a mut Color,
+    /// Texture to paint with, and the model-space size of one tile.
+    pub material_tex: Option<(sc_geom::TexId, f64)>,
     /// Pixel delta of the pointer since the previous event (camera tools).
     pub delta: DVec2,
     /// Changes to the edit context, applied by the app after the tool returns.

@@ -1,6 +1,7 @@
 //! Select, Eraser and Paint Bucket.
 
 use super::*;
+use sc_geom::{FaceTexture, UvMap};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -416,12 +417,24 @@ impl Tool for PaintBucketTool {
         let targets: Vec<FaceId> = if cx.selection.faces.contains(&hit.face) { cx.selection.faces.iter().copied().collect() } else { vec![hit.face] };
         cx.checkpoint("Paint");
         let m = *cx.material;
+        let tex = cx.material_tex;
         for f in targets {
+            // Lay the tile flat on the face at its real-world size, which is the mapping
+            // SketchUp starts from before you nudge it about.
+            let paint = tex.map(|(tex, tile)| {
+                let pl = cx.mesh.faces[f].plane;
+                let (e1, e2) = pl.basis();
+                let k = if tile.abs() > 1e-9 { 1.0 / tile } else { 1.0 };
+                let axis = |e: sc_math::DVec3| sc_math::DVec4::new(e.x * k, e.y * k, e.z * k, 0.0);
+                FaceTexture { tex, uv: UvMap { u: axis(e1), v: axis(e2) } }
+            });
             let face = &mut cx.mesh.faces[f];
             if back_side {
                 face.back = Some(m);
+                face.back_tex = paint;
             } else {
                 face.front = Some(m);
+                face.front_tex = paint;
             }
         }
         cx.mesh.revision += 1;

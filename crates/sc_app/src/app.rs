@@ -72,6 +72,10 @@ pub struct SketchCadApp {
     pub vcb_grip_rect: egui::Rect,
     pub message: Option<(String, Instant, bool)>,
     pub material: Color,
+    /// Texture of the chosen material and its tile size, once placed in the model.
+    pub material_tex: Option<(sc_geom::TexId, f64)>,
+    /// Swatch tiles uploaded for the Materials tray.
+    pub material_previews: std::collections::HashMap<&'static str, egui::TextureHandle>,
     pub keymap: Keymap,
     pub renderer: Option<ViewportRenderer>,
     pub panels: Panels,
@@ -113,6 +117,8 @@ impl SketchCadApp {
             vcb_grip_rect: egui::Rect::NOTHING,
             message: None,
             material: [178, 34, 34, 255],
+            material_tex: None,
+            material_previews: std::collections::HashMap::new(),
             keymap: Keymap::default(),
             renderer,
             panels: Panels { getting_started: true, large_tool_set: true, tray: true, model_info: false, preferences: false, about: false },
@@ -212,6 +218,7 @@ impl SketchCadApp {
             mods: self.prev_mods,
             vcb: &mut self.vcb,
             material: &mut self.material,
+            material_tex: self.material_tex,
             delta: DVec2::ZERO,
             request: &mut self.tool_request,
         };

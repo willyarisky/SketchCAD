@@ -517,3 +517,52 @@ fn tool_draws_its_own_cursor() {
     h.run_steps(2);
     assert_ne!(cursor(&h), egui::CursorIcon::None, "outside the viewport the OS cursor is visible again");
 }
+
+/// Picking a patterned material and painting a face puts a real tiling texture on it: the model
+/// gains the image once however many faces use it, and the face gets a placement at tile scale.
+#[test]
+fn paint_bucket_applies_a_patterned_material() {
+    let mut h = harness(LaunchOptions::default());
+    {
+        // A plain square on the ground, directly in the active context so the bucket can hit it.
+        let mut b = sc_geom::MeshBuilder::new();
+        let sq = [DVec3::ZERO, DVec3::new(200.0, 0.0, 0.0), DVec3::new(200.0, 200.0, 0.0), DVec3::new(0.0, 200.0, 0.0)];
+        b.face(&sq, &[], DVec3::Z, None, None).unwrap();
+        h.state_mut().doc.model.mesh = b.finish();
+        h.state_mut().pending_zoom_extents = true;
+    }
+    h.run_steps(5);
+    let brick = crate::materials::MATERIALS.iter().find(|m| m.name == "Brick").unwrap();
+    h.state_mut().pick_material(brick);
+    {
+        let app = h.state();
+        assert_eq!(app.material, brick.color, "the colour follows the material");
+        let (_, tile) = app.material_tex.expect("a patterned material carries a texture");
+        assert_eq!(tile, brick.tile);
+        assert_eq!(app.doc.model.textures.len(), 1, "the tile is placed in the model");
+    }
+    // Picking it again must not store a second copy.
+    h.state_mut().pick_material(brick);
+    assert_eq!(h.state().doc.model.textures.len(), 1, "one copy per material");
+
+    press(&mut h, Key::B);
+    let face = screen_of(&h, DVec3::new(100.0, 100.0, 0.0));
+    click(&mut h, face);
+    h.run_steps(3);
+
+    let painted: Vec<_> = {
+        let m = &h.state().doc.model;
+        std::iter::once(&m.mesh).chain(m.definitions.values().map(|d| &d.mesh)).flat_map(|x| x.faces.values()).filter_map(|f| f.front_tex.or(f.back_tex)).collect()
+    };
+    assert!(!painted.is_empty(), "the face was painted with the texture");
+    let uv = painted[0].uv;
+    // A 32in tile means one repeat every 32 inches, whichever way the face is turned.
+    assert!((uv.u.truncate().length() - 1.0 / 32.0).abs() < 1e-9, "u axis is one tile per 32in");
+    assert!((uv.v.truncate().length() - 1.0 / 32.0).abs() < 1e-9, "v axis is one tile per 32in");
+    assert!(uv.u.truncate().dot(uv.v.truncate()).abs() < 1e-9, "the two axes are perpendicular");
+
+    // A hand-picked colour goes back to being a plain colour.
+    h.state_mut().material_tex = None;
+    assert!(h.state().material_tex.is_none());
+    save(&mut h, "material_bucket");
+}
