@@ -18,6 +18,7 @@
 //! (see [`tlv`]) but the vocabulary is not, and working it out is an open task. Until then
 //! geometry still comes from the SketchUp library via [`crate::locate`].
 
+pub mod model;
 pub mod tlv;
 
 mod material;
@@ -78,6 +79,23 @@ fn zip_start(bytes: &[u8]) -> Option<usize> {
 pub fn read(path: &Path) -> Result<NativeSkp, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
     read_bytes(&bytes)
+}
+
+/// Read a `.skp` / `.skb` whole — geometry included — with no SketchUp library involved.
+///
+/// Only the modern zip container can be read this way; older files still need the library, and
+/// say so rather than coming back empty.
+pub fn read_model(path: &Path) -> Result<crate::SkpModel, String> {
+    let f = read(path)?;
+    let Some(dat) = &f.model_dat else {
+        return Err(format!("{} was written by {}, which stores its geometry in the older format SketchCAD cannot read on its own yet.", path.display(), f.version_name()));
+    };
+    let mut m = model::read(dat, f.version.clone())?;
+    // Materials come from the container, which is already understood; only their assignment to
+    // faces is still undecoded, so they arrive as a palette rather than painted on.
+    m.materials = f.materials.iter().map(|mat| crate::SkpMaterial { name: mat.name.clone(), color: mat.color, texture: mat.texture }).collect();
+    m.textures = f.textures;
+    Ok(m)
 }
 
 pub fn read_bytes(bytes: &[u8]) -> Result<NativeSkp, String> {

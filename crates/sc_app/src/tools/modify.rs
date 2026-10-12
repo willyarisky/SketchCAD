@@ -9,7 +9,7 @@ use sc_math::{DMat4, DVec2, geom2d};
 use std::collections::HashSet;
 
 fn tooltip_at(ov: &mut Overlay, cx: &ToolCx, text: &str) {
-    let p = egui::pos2(cx.cursor.x as f32, cx.cursor.y as f32) + egui::vec2(14.0, 18.0);
+    let p = egui::pos2(cx.cursor.x as f32, cx.cursor.y as f32) + crate::ui::viewport::CURSOR_TOOLTIP_OFFSET;
     ov.tooltips.push((p, text.to_string()));
 }
 

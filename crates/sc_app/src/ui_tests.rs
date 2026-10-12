@@ -492,3 +492,28 @@ fn measurements_box_resizes_by_dragging() {
     assert_eq!(h.state().vcb_width, 60.0, "clamped to the minimum width");
     save(&mut h, "measurements_resized");
 }
+
+/// Over the viewport the tool draws its own cursor, so the OS one is hidden; elsewhere the
+/// ordinary pointer comes back. Orbit used to borrow the grab hand and read as Pan.
+#[test]
+fn tool_draws_its_own_cursor() {
+    let mut h = harness(LaunchOptions { demo: true, ..Default::default() });
+    h.run_steps(3);
+    // Read it off the finished frame: ctx.output() is reset once the pass has been consumed.
+    let cursor = |h: &Harness<SketchCadApp>| h.output().platform_output.cursor_icon;
+
+    for (key, tool) in [(Key::O, crate::tools::ToolId::Orbit), (Key::L, crate::tools::ToolId::Line), (Key::P, crate::tools::ToolId::PushPull)] {
+        press(&mut h, key);
+        assert_eq!(h.state().tool.id(), tool);
+        let c = h.state().viewport.rect.center();
+        move_to(&mut h, c);
+        h.run_steps(2);
+        assert_eq!(cursor(&h), egui::CursorIcon::None, "{tool:?} should hide the OS cursor and draw its own");
+    }
+
+    // Off the viewport — over the tray on the right — the normal cursor returns.
+    let off = { let r = h.state().viewport.rect; pos2(r.max.x + 60.0, r.min.y + 40.0) };
+    move_to(&mut h, off);
+    h.run_steps(2);
+    assert_ne!(cursor(&h), egui::CursorIcon::None, "outside the viewport the OS cursor is visible again");
+}

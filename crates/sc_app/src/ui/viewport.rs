@@ -45,7 +45,40 @@ impl Default for ViewportState {
 
 const VCB_START: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ',', '-', '[', '<', '/', '*', '\'', '"', '~'];
 
+/// How big the tool glyph beside the pointer is drawn, in UI points.
+const CURSOR_ICON_SIZE: f32 = 22.0;
+/// Where a tooltip sits relative to the pointer. It has to clear the tool glyph, which occupies
+/// roughly 7..29 points down and right of the hotspot.
+pub const CURSOR_TOOLTIP_OFFSET: egui::Vec2 = egui::vec2(CURSOR_ICON_SIZE + 12.0, 10.0);
+
 impl SketchCadApp {
+    /// Draw the active tool's own icon at the pointer, the way SketchUp does.
+    ///
+    /// The stock cursors cannot express a tool: there is no orbit or pencil among them, so Orbit
+    /// ends up borrowing the grab hand and reads as Pan. Painting the toolbar icon instead means
+    /// the cursor always matches the button that is lit up.
+    ///
+    /// The hotspot stays the exact pointer position — the glyph hangs below and right of it, so
+    /// it never covers the point being picked or the inference dot drawn there.
+    fn paint_tool_cursor(&self, ctx: &egui::Context, painter: &egui::Painter) {
+        let Some(p) = ctx.pointer_latest_pos() else {
+            return;
+        };
+        // While a tool is mid-drag the pointer can leave the viewport; keep the glyph inside it.
+        if !painter.clip_rect().contains(p) {
+            ctx.set_cursor_icon(self.tool.cursor());
+            return;
+        }
+        ctx.set_cursor_icon(egui::CursorIcon::None);
+        let rect = egui::Rect::from_min_size(p + egui::vec2(7.0, 7.0), egui::Vec2::splat(CURSOR_ICON_SIZE));
+        super::icons::paint(painter, rect, super::icons::Icon::Tool(self.tool.id()), true);
+        // A small cross marks the hotspot, as SketchUp's cursors do.
+        let arm = 4.0;
+        let stroke = egui::Stroke::new(1.0, Color32::from_gray(30));
+        painter.line_segment([p - egui::vec2(arm, 0.0), p + egui::vec2(arm, 0.0)], stroke);
+        painter.line_segment([p - egui::vec2(0.0, arm), p + egui::vec2(0.0, arm)], stroke);
+    }
+
     pub fn viewport_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let rect = ui.available_rect_before_wrap();
@@ -119,7 +152,7 @@ impl SketchCadApp {
                 super::paint_tooltip(&painter, *p + offset, t);
             }
             if resp.hovered() {
-                ctx.set_cursor_icon(self.tool.cursor());
+                self.paint_tool_cursor(&ctx, &painter);
             }
             // Right-click: select what's under the cursor (unless it's already selected) and show
             // the context menu.
@@ -373,7 +406,7 @@ impl SketchCadApp {
         }
         let text = inf.kind.tooltip();
         if !text.is_empty() {
-            ov.tooltips.push((p + vec2(12.0, 14.0), text));
+            ov.tooltips.push((p + CURSOR_TOOLTIP_OFFSET, text));
         }
     }
 
